@@ -2,23 +2,22 @@ name: Sync OuonnkiTV
 
 on:
   schedule:
-    # 每天 UTC 00:00 运行（北京时间 08:00）
     - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout target branch (create if missing)
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
           ref: OuonnkiTV
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -30,7 +29,6 @@ jobs:
           git remote add upstream https://github.com/Ouonnki/OuonnkiTV.git
           git fetch --prune upstream
 
-      # 关键：用上游分支强制重置当前分支，实现镜像覆盖
       - name: Hard reset OuonnkiTV to upstream/main
         run: |
           git checkout OuonnkiTV || git checkout -b OuonnkiTV
