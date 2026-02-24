@@ -1,0 +1,40 @@
+name: Mirror Sync OuonnkiTV -> OuonnkiTV branch
+
+on:
+  schedule:
+    # 每天 UTC 00:00 运行（北京时间 08:00）
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch (create if missing)
+        uses: actions/checkout@v4
+        with:
+          ref: OuonnkiTV
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/Ouonnki/OuonnkiTV.git
+          git fetch --prune upstream
+
+      # 关键：用上游分支强制重置当前分支，实现镜像覆盖
+      - name: Hard reset OuonnkiTV to upstream/main
+        run: |
+          git checkout OuonnkiTV || git checkout -b OuonnkiTV
+          git reset --hard upstream/main
+
+      - name: Push (force) to OuonnkiTV
+        run: |
+          git push origin OuonnkiTV --force
