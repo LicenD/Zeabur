@@ -11,29 +11,58 @@ permissions:
 jobs:
   mirror:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout target branch
+      - name: Checkout OuonnkiTV branch
         uses: actions/checkout@v4
         with:
           ref: OuonnkiTV
           fetch-depth: 0
-          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # 备份需要排除的文件
+      - name: Backup excluded files
+        run: |
+          mkdir -p /tmp/backup
+          if [ -d ".github/workflows" ]; then
+            cp -r .github/workflows /tmp/backup/
+          fi
+          if [ -f ".dockerignore" ]; then
+            cp .dockerignore /tmp/backup/
+          fi
+
       - name: Add upstream and fetch
         run: |
-          git remote add upstream https://github.com/Ouonnki/OuonnkiTV.git
+          git remote add upstream https://github.com/Ouonnki/OuonnkiTV.git || true
           git fetch --prune upstream
 
-      - name: Hard reset OuonnkiTV to upstream/main
+      - name: Hard reset to upstream/main
         run: |
           git checkout OuonnkiTV || git checkout -b OuonnkiTV
           git reset --hard upstream/main
 
-      - name: Push (force) to OuonnkiTV
+      # 恢复排除文件（不被覆盖）
+      - name: Restore excluded files
+        run: |
+          # 恢复 workflows
+          if [ -d "/tmp/backup/workflows" ]; then
+            rm -rf .github/workflows
+            mkdir -p .github
+            cp -r /tmp/backup/workflows .github/workflows
+          fi
+
+          # 恢复 .dockerignore
+          if [ -f "/tmp/backup/.dockerignore" ]; then
+            cp /tmp/backup/.dockerignore .dockerignore
+          fi
+
+          git add .github/workflows .dockerignore || true
+          git commit -m "Keep excluded files" || true
+
+      - name: Force push
         run: |
           git push origin OuonnkiTV --force
