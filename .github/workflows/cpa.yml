@@ -2,7 +2,7 @@ name: CPA
 
 on:
   schedule:
-    - cron: "0 23 * * *"   # 每天 UTC 23:00
+    - cron: "0 23 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -20,15 +20,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
       - name: Pull upstream
         run: docker pull eceasy/cli-proxy-api:latest
 
-      - name: Retag to cpa:latest
-        run: |
-          OWNER="${{ github.repository_owner }}"
-          docker tag eceasy/cli-proxy-api:latest ghcr.io/${OWNER}/cpa:latest
+      - name: Retag
+        run: docker tag eceasy/cli-proxy-api:latest ghcr.io/${OWNER_LC}/cpa:latest
 
-      - name: Push to GHCR
-        run: |
-          OWNER="${{ github.repository_owner }}"
-          docker push ghcr.io/${OWNER}/cpa:latest
+      - name: Push
+        run: docker push ghcr.io/${OWNER_LC}/cpa:latest
