@@ -1,0 +1,34 @@
+name: CPA
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 每天 UTC 23:00
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull upstream
+        run: docker pull eceasy/cli-proxy-api:latest
+
+      - name: Retag to cpa:latest
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          docker tag eceasy/cli-proxy-api:latest ghcr.io/${OWNER}/cpa:latest
+
+      - name: Push to GHCR
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          docker push ghcr.io/${OWNER}/cpa:latest
