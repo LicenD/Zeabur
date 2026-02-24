@@ -1,4 +1,4 @@
-name: Mirror Sync OuonnkiTV -> OuonnkiTV branch
+name: Sync OuonnkiTV
 
 on:
   schedule:
@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   mirror:
