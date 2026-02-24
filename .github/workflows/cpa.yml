@@ -26,8 +26,28 @@ jobs:
       - name: Pull upstream
         run: docker pull eceasy/cli-proxy-api:latest
 
-      - name: Retag
-        run: docker tag eceasy/cli-proxy-api:latest ghcr.io/${OWNER_LC}/cpa:latest
+      - name: Get upstream version
+        id: get_version
+        run: |
+          VERSION=$(docker inspect eceasy/cli-proxy-api:latest \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')
 
-      - name: Push
+          if [ -z "$VERSION" ]; then
+            echo "No version label found, fallback to date"
+            VERSION=$(date +%Y%m%d)
+          fi
+
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected version: $VERSION"
+
+      - name: Tag images
+        run: |
+          IMAGE=ghcr.io/${OWNER_LC}/cpa
+          docker tag eceasy/cli-proxy-api:latest ${IMAGE}:${VERSION}
+          docker tag eceasy/cli-proxy-api:latest ${IMAGE}:latest
+
+      - name: Push version tag
+        run: docker push ghcr.io/${OWNER_LC}/cpa:${VERSION}
+
+      - name: Push latest tag
         run: docker push ghcr.io/${OWNER_LC}/cpa:latest
