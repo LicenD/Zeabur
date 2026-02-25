@@ -1,5 +1,4 @@
 name: CPA
-
 on:
   schedule:
     - cron: "10 23 * * *" 
@@ -24,6 +23,10 @@ jobs:
           JSON="$(curl -fsSL "$API")"
 
           TAG="$(echo "$JSON" | jq -r '.tag_name')"
+          if [ -z "${TAG:-}" ] || [ "$TAG" = "null" ]; then
+            echo "Failed to get tag_name from latest release"
+            exit 1
+          fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "Latest TAG=$TAG"
 
@@ -55,6 +58,7 @@ jobs:
         run: |
           set -e
           IMAGE="ghcr.io/${OWNER_LC}/cpa:${TAG}"
+          echo "Checking: $IMAGE"
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "Already built for ${TAG}, skip."
             echo "SKIP=true" >> "$GITHUB_ENV"
@@ -67,7 +71,7 @@ jobs:
         if: env.SKIP != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Dockerfile (rename program+dir to CPA)
+      - name: Generate Dockerfile (Debian + bash, rename program+dir to CPA)
         if: env.SKIP != 'true'
         run: |
           set -euo pipefail
@@ -81,14 +85,17 @@ jobs:
           ARG TARGETARCH
 
           RUN apt-get update && apt-get install -y --no-install-recommends \
-                ca-certificates tzdata curl tar \
+                ca-certificates tzdata curl tar bash findutils \
               && rm -rf /var/lib/apt/lists/*
+
+          # Use bash for RUN (supports pipefail)
+          SHELL ["/bin/bash", "-lc"]
 
           ENV TZ=Asia/Shanghai
           RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-          # dash(/bin/sh) 不支持 pipefail，所以这里只用 set -eu
-          RUN set -eu; \
+          # Download correct arch tarball and install binary as /CPA/CPA
+          RUN set -euxo pipefail; \
               mkdir -p /tmp/app /CPA; \
               case "$TARGETARCH" in \
                 amd64) url="$URL_AMD64" ;; \
@@ -97,9 +104,19 @@ jobs:
               esac; \
               echo "Downloading for $TARGETARCH: $url"; \
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
+              echo "Tar list (head):"; \
+              tar -tzf /tmp/app/app.tar.gz | head -n 80; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
-              bin="$(find /tmp/app -maxdepth 2 -type f \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n1)"; \
-              test -n "$bin"; \
+              echo "Extracted tree (maxdepth 3):"; \
+              find /tmp/app -maxdepth 3 -type f -printf "%M %p\n" | head -n 200; \
+              \
+              bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n 1)"; \
+              if [[ -z "$bin" ]]; then \
+                echo "CLIProxyAPI* not found, fallback to any executable file"; \
+                bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 | head -n 1)"; \
+              fi; \
+              [[ -n "$bin" ]] || (echo "Executable binary not found in release tarball" && exit 1); \
+              echo "Using binary: $bin"; \
               cp "$bin" /CPA/CPA; \
               chmod +x /CPA/CPA; \
               chown -R 1000:1000 /CPA; \
