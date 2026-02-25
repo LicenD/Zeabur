@@ -2,7 +2,7 @@ name: CPA
 
 on:
   schedule:
-    - cron: "10 23 * * *" # 每天 UTC 23:10
+    - cron: "10 23 * * *" 
   workflow_dispatch: {}
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Set lowercase owner
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - name: Get latest release tag + asset URLs
         run: |
@@ -23,24 +23,24 @@ jobs:
           API="https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
           JSON="$(curl -fsSL "$API")"
 
-          TAG="$(echo "$JSON" | jq -r '.tag_name')"   # e.g. v6.8.27
-          echo "TAG=$TAG" >> $GITHUB_ENV
+          TAG="$(echo "$JSON" | jq -r '.tag_name')"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "Latest TAG=$TAG"
 
           URL_AMD64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
           URL_ARM64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_arm64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
 
-          if [ -z "$URL_AMD64" ] || [ "$URL_AMD64" = "null" ]; then
+          if [ -z "${URL_AMD64:-}" ] || [ "$URL_AMD64" = "null" ]; then
             echo "Cannot find linux_amd64.tar.gz in latest release assets"
             exit 1
           fi
-          if [ -z "$URL_ARM64" ] || [ "$URL_ARM64" = "null" ]; then
+          if [ -z "${URL_ARM64:-}" ] || [ "$URL_ARM64" = "null" ]; then
             echo "Cannot find linux_arm64.tar.gz in latest release assets"
             exit 1
           fi
 
-          echo "URL_AMD64=$URL_AMD64" >> $GITHUB_ENV
-          echo "URL_ARM64=$URL_ARM64" >> $GITHUB_ENV
+          echo "URL_AMD64=$URL_AMD64" >> "$GITHUB_ENV"
+          echo "URL_ARM64=$URL_ARM64" >> "$GITHUB_ENV"
           echo "AMD64 asset: $URL_AMD64"
           echo "ARM64 asset: $URL_ARM64"
 
@@ -57,17 +57,17 @@ jobs:
           IMAGE="ghcr.io/${OWNER_LC}/cpa:${TAG}"
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "Already built for ${TAG}, skip."
-            echo "SKIP=true" >> $GITHUB_ENV
+            echo "SKIP=true" >> "$GITHUB_ENV"
           else
             echo "Not built for ${TAG}, will build."
-            echo "SKIP=false" >> $GITHUB_ENV
+            echo "SKIP=false" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Docker Buildx
         if: env.SKIP != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Dockerfile (downloads correct binary per TARGETARCH)
+      - name: Generate Dockerfile (rename program+dir to CPA)
         if: env.SKIP != 'true'
         run: |
           set -euo pipefail
@@ -87,9 +87,9 @@ jobs:
           ENV TZ=Asia/Shanghai
           RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-          # 下载对应架构的 release 二进制包，并把可执行文件放到 /CLIProxyAPI/CLIProxyAPI
+          # Download correct arch tarball and install binary as /CPA/CPA
           RUN set -euo pipefail; \
-              mkdir -p /tmp/app /CLIProxyAPI; \
+              mkdir -p /tmp/app /CPA; \
               case "$TARGETARCH" in \
                 amd64) url="$URL_AMD64" ;; \
                 arm64) url="$URL_ARM64" ;; \
@@ -98,18 +98,18 @@ jobs:
               echo "Downloading for $TARGETARCH: $url"; \
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
-              bin="$(find /tmp/app -maxdepth 2 -type f -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' | head -n1)"; \
-              [ -n "$bin" ] || (echo "Binary not found in tarball" && ls -la /tmp/app && exit 1); \
-              cp "$bin" /CLIProxyAPI/CLIProxyAPI; \
-              chmod +x /CLIProxyAPI/CLIProxyAPI; \
-              chown -R 1000:1000 /CLIProxyAPI; \
+              bin="$(find /tmp/app -maxdepth 2 -type f \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n1)"; \
+              [ -n "$bin" ] || (echo "Binary not found" && ls -la /tmp/app && exit 1); \
+              cp "$bin" /CPA/CPA; \
+              chmod +x /CPA/CPA; \
+              chown -R 1000:1000 /CPA; \
               rm -rf /tmp/app
 
-          WORKDIR /CLIProxyAPI
+          WORKDIR /CPA
           EXPOSE 8317
 
           USER 1000:1000
-          CMD ["./CLIProxyAPI"]
+          CMD ["./CPA"]
           EOF
 
       - name: Build & push multi-arch (tag + latest)
