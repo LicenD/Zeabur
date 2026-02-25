@@ -2,7 +2,7 @@ name: CPA
 
 on:
   schedule:
-    - cron: "0 23 * * *"
+    - cron: "10 23 * * *" # 每天 UTC 23:10
   workflow_dispatch: {}
 
 permissions:
@@ -10,9 +10,40 @@ permissions:
   packages: write
 
 jobs:
-  sync:
+  build:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Set lowercase owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+      - name: Get latest release tag + asset URLs
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
+          JSON="$(curl -fsSL "$API")"
+
+          TAG="$(echo "$JSON" | jq -r '.tag_name')"   # e.g. v6.8.27
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "Latest TAG=$TAG"
+
+          URL_AMD64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
+          URL_ARM64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_arm64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
+
+          if [ -z "$URL_AMD64" ] || [ "$URL_AMD64" = "null" ]; then
+            echo "Cannot find linux_amd64.tar.gz in latest release assets"
+            exit 1
+          fi
+          if [ -z "$URL_ARM64" ] || [ "$URL_ARM64" = "null" ]; then
+            echo "Cannot find linux_arm64.tar.gz in latest release assets"
+            exit 1
+          fi
+
+          echo "URL_AMD64=$URL_AMD64" >> $GITHUB_ENV
+          echo "URL_ARM64=$URL_ARM64" >> $GITHUB_ENV
+          echo "AMD64 asset: $URL_AMD64"
+          echo "ARM64 asset: $URL_ARM64"
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -20,68 +51,78 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set lowercase owner
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
-
-      - name: Pull upstream latest
-        run: docker pull eceasy/cli-proxy-api:latest
-
-      - name: Detect version tag by matching digest (DockerHub API)
+      - name: Skip if this release tag already exists in GHCR
         run: |
-          set -euo pipefail
-
-          REPO="eceasy/cli-proxy-api"
-          HUB="https://hub.docker.com/v2/repositories/${REPO}/tags"
-
-          # 取 latest 的所有平台 digest（multi-arch 会有多个）
-          LATEST_JSON=$(curl -fsSL "${HUB}/latest")
-          LATEST_DIGESTS=$(echo "$LATEST_JSON" | jq -r '.images[].digest' | sort -u)
-
-          echo "Latest digests:"
-          echo "$LATEST_DIGESTS"
-
-          # 遍历 tag 列表，找一个名字像 v* 且 digest 集合与 latest 完全一致的 tag
-          URL="${HUB}?page_size=100"
-          FOUND=""
-
-          while [ -n "$URL" ] && [ "$URL" != "null" ]; do
-            PAGE=$(curl -fsSL "$URL")
-            # 候选 tag：以 v 开头（你也可以按需改成更严格的正则）
-            TAGS=$(echo "$PAGE" | jq -r '.results[].name' | grep -E '^v' || true)
-
-            for T in $TAGS; do
-              TJ=$(curl -fsSL "${HUB}/${T}")
-              D=$(echo "$TJ" | jq -r '.images[].digest' | sort -u)
-
-              if [ "$D" = "$LATEST_DIGESTS" ]; then
-                FOUND="$T"
-                break
-              fi
-            done
-
-            if [ -n "$FOUND" ]; then
-              break
-            fi
-
-            URL=$(echo "$PAGE" | jq -r '.next')
-          done
-
-          if [ -z "$FOUND" ]; then
-            echo "No matching version tag found for latest digest, fallback to date"
-            FOUND=$(date +%Y%m%d)
+          set -e
+          IMAGE="ghcr.io/${OWNER_LC}/cpa:${TAG}"
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "Already built for ${TAG}, skip."
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            echo "Not built for ${TAG}, will build."
+            echo "SKIP=false" >> $GITHUB_ENV
           fi
 
-          echo "VERSION_TAG=$FOUND" >> $GITHUB_ENV
-          echo "Detected version tag: $FOUND"
+      - name: Set up Docker Buildx
+        if: env.SKIP != 'true'
+        uses: docker/setup-buildx-action@v3
 
-      - name: Tag images (version + latest)
+      - name: Generate Dockerfile (downloads correct binary per TARGETARCH)
+        if: env.SKIP != 'true'
         run: |
-          IMAGE=ghcr.io/${OWNER_LC}/cpa
-          docker tag eceasy/cli-proxy-api:latest ${IMAGE}:${VERSION_TAG}
-          docker tag eceasy/cli-proxy-api:latest ${IMAGE}:latest
+          set -euo pipefail
+          mkdir -p ctx
 
-      - name: Push version tag
-        run: docker push ghcr.io/${OWNER_LC}/cpa:${VERSION_TAG}
+          cat > ctx/Dockerfile <<'EOF'
+          FROM debian:bookworm-slim
 
-      - name: Push latest tag
-        run: docker push ghcr.io/${OWNER_LC}/cpa:latest
+          ARG URL_AMD64
+          ARG URL_ARM64
+          ARG TARGETARCH
+
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                ca-certificates tzdata curl tar \
+              && rm -rf /var/lib/apt/lists/*
+
+          ENV TZ=Asia/Shanghai
+          RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+          # 下载对应架构的 release 二进制包，并把可执行文件放到 /CLIProxyAPI/CLIProxyAPI
+          RUN set -euo pipefail; \
+              mkdir -p /tmp/app /CLIProxyAPI; \
+              case "$TARGETARCH" in \
+                amd64) url="$URL_AMD64" ;; \
+                arm64) url="$URL_ARM64" ;; \
+                *) echo "Unsupported TARGETARCH=$TARGETARCH" && exit 1 ;; \
+              esac; \
+              echo "Downloading for $TARGETARCH: $url"; \
+              curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
+              tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
+              bin="$(find /tmp/app -maxdepth 2 -type f -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' | head -n1)"; \
+              [ -n "$bin" ] || (echo "Binary not found in tarball" && ls -la /tmp/app && exit 1); \
+              cp "$bin" /CLIProxyAPI/CLIProxyAPI; \
+              chmod +x /CLIProxyAPI/CLIProxyAPI; \
+              chown -R 1000:1000 /CLIProxyAPI; \
+              rm -rf /tmp/app
+
+          WORKDIR /CLIProxyAPI
+          EXPOSE 8317
+
+          USER 1000:1000
+          CMD ["./CLIProxyAPI"]
+          EOF
+
+      - name: Build & push multi-arch (tag + latest)
+        if: env.SKIP != 'true'
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${OWNER_LC}/cpa"
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg URL_AMD64="${URL_AMD64}" \
+            --build-arg URL_ARM64="${URL_ARM64}" \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:latest" \
+            --push \
+            ctx
