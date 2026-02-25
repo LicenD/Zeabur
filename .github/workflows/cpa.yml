@@ -87,8 +87,8 @@ jobs:
           ENV TZ=Asia/Shanghai
           RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-          # Download correct arch tarball and install binary as /CPA/CPA
-          RUN set -euo pipefail; \
+          # dash(/bin/sh) 不支持 pipefail，所以这里只用 set -eu
+          RUN set -eu; \
               mkdir -p /tmp/app /CPA; \
               case "$TARGETARCH" in \
                 amd64) url="$URL_AMD64" ;; \
@@ -99,7 +99,7 @@ jobs:
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
               bin="$(find /tmp/app -maxdepth 2 -type f \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n1)"; \
-              [ -n "$bin" ] || (echo "Binary not found" && ls -la /tmp/app && exit 1); \
+              test -n "$bin"; \
               cp "$bin" /CPA/CPA; \
               chmod +x /CPA/CPA; \
               chown -R 1000:1000 /CPA; \
