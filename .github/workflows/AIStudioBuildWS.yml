@@ -60,8 +60,12 @@ jobs:
 
       - name: Push version tag
         if: env.SKIP_BUILD != 'true'
-        run: docker push ghcr.io/${OWNER_LC}/aistudiobuildws:${VERSION}
+        run: |
+          echo "Pushing version tag ${VERSION}"
+          docker push ghcr.io/${OWNER_LC}/aistudiobuildws:${VERSION}
 
       - name: Push latest tag
         if: env.SKIP_BUILD != 'true'
-        run: docker push ghcr.io/${OWNER_LC}/aistudiobuildws:latest
+        run: |
+          echo "Pushing latest tag"
+          docker push ghcr.io/${OWNER_LC}/aistudiobuildws:latest
