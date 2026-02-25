@@ -51,11 +51,12 @@ jobs:
             echo "SKIP_BUILD=false" >> $GITHUB_ENV
           fi
 
-      - name: Build image
+      - name: Build multi-architecture image
         if: env.SKIP_BUILD != 'true'
         run: |
           IMAGE_BASE="ghcr.io/${OWNER_LC}/aistudiobuildws"
-          docker build -t ${IMAGE_BASE}:${VERSION} -t ${IMAGE_BASE}:latest ./upstream
+          docker buildx create --use # Create a new buildx builder if not already created
+          docker buildx build --platform linux/amd64,linux/arm64 -t ${IMAGE_BASE}:${VERSION} -t ${IMAGE_BASE}:latest ./upstream --push
 
       - name: Push version tag
         if: env.SKIP_BUILD != 'true'
