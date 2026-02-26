@@ -89,6 +89,8 @@ payload:
     - models:
         - name: gemini-3-pro-preview
           protocol: antigravity
+        - name: gemini-3.1-pro-preview
+          protocol: antigravity
       params:
         reasoning.effort: high
 force-model-prefix: true
