@@ -107,7 +107,7 @@ jobs:
               rm -rf /tmp/app
 
           WORKDIR /CPA
-          EXPOSE 8317
+          EXPOSE 7860
 
           USER 1000:1000
           CMD ["./CPA"]
