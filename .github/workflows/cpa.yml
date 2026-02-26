@@ -1,7 +1,8 @@
 name: CPA
+
 on:
   schedule:
-    - cron: "10 23 * * *" 
+    - cron: "10 23 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -42,10 +43,13 @@ jobs:
             exit 1
           fi
 
-          echo "URL_AMD64=$URL_AMD64" >> "$GITHUB_ENV"
-          echo "URL_ARM64=$URL_ARM64" >> "$GITHUB_ENV"
+          # 对应 tag 的源码包（用于拿 config.example.yaml）
+          SRC_URL="https://github.com/router-for-me/CLIProxyAPI/archive/refs/tags/${TAG}.tar.gz"
+          echo "SRC_URL=$SRC_URL" >> "$GITHUB_ENV"
+
           echo "AMD64 asset: $URL_AMD64"
           echo "ARM64 asset: $URL_ARM64"
+          echo "Source tarball: $SRC_URL"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -71,7 +75,7 @@ jobs:
         if: env.SKIP != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Dockerfile (Debian + bash, rename program+dir to CPA)
+      - name: Generate Dockerfile (Debian + bash, rename to CPA, include config.example.yaml)
         if: env.SKIP != 'true'
         run: |
           set -euo pipefail
@@ -82,34 +86,30 @@ jobs:
 
           ARG URL_AMD64
           ARG URL_ARM64
+          ARG SRC_URL
           ARG TARGETARCH
 
           RUN apt-get update && apt-get install -y --no-install-recommends \
                 ca-certificates tzdata curl tar bash findutils \
               && rm -rf /var/lib/apt/lists/*
 
-          # Use bash for RUN (supports pipefail)
           SHELL ["/bin/bash", "-lc"]
 
           ENV TZ=Asia/Shanghai
           RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-          # Download correct arch tarball and install binary as /CPA/CPA
           RUN set -euxo pipefail; \
-              mkdir -p /tmp/app /CPA; \
+              mkdir -p /tmp/app /tmp/src /CPA; \
               case "$TARGETARCH" in \
                 amd64) url="$URL_AMD64" ;; \
                 arm64) url="$URL_ARM64" ;; \
                 *) echo "Unsupported TARGETARCH=$TARGETARCH" && exit 1 ;; \
               esac; \
-              echo "Downloading for $TARGETARCH: $url"; \
+              echo "Downloading binary for $TARGETARCH: $url"; \
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
-              echo "Tar list (head):"; \
-              tar -tzf /tmp/app/app.tar.gz | head -n 80; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
-              echo "Extracted tree (maxdepth 3):"; \
-              find /tmp/app -maxdepth 3 -type f -printf "%M %p\n" | head -n 200; \
               \
+              # 找可执行文件并安装为 /CPA/CPA
               bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n 1)"; \
               if [[ -z "$bin" ]]; then \
                 echo "CLIProxyAPI* not found, fallback to any executable file"; \
@@ -119,8 +119,17 @@ jobs:
               echo "Using binary: $bin"; \
               cp "$bin" /CPA/CPA; \
               chmod +x /CPA/CPA; \
+              \
+              # 下载同 tag 的源码包，只提取 config.example.yaml
+              echo "Downloading source tarball: $SRC_URL"; \
+              curl -fsSL "$SRC_URL" -o /tmp/src/src.tar.gz; \
+              tar -xzf /tmp/src/src.tar.gz -C /tmp/src; \
+              cfg="$(find /tmp/src -maxdepth 4 -type f -name 'config.example.yaml' | head -n 1)"; \
+              [[ -n "$cfg" ]] || (echo "config.example.yaml not found in source tarball" && exit 1); \
+              cp "$cfg" /CPA/config.example.yaml; \
+              \
               chown -R 1000:1000 /CPA; \
-              rm -rf /tmp/app
+              rm -rf /tmp/app /tmp/src
 
           WORKDIR /CPA
           EXPOSE 8317
@@ -139,6 +148,7 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --build-arg URL_AMD64="${URL_AMD64}" \
             --build-arg URL_ARM64="${URL_ARM64}" \
+            --build-arg SRC_URL="${SRC_URL}" \
             -t "${IMAGE}:${TAG}" \
             -t "${IMAGE}:latest" \
             --push \
