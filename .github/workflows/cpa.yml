@@ -1,5 +1,4 @@
 name: CPA
-
 on:
   schedule:
     - cron: "10 23 * * *"
@@ -18,35 +17,29 @@ jobs:
         run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - name: Get latest release tag + asset URLs
+        id: rel
         run: |
           set -euo pipefail
           API="https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
           JSON="$(curl -fsSL "$API")"
 
           TAG="$(echo "$JSON" | jq -r '.tag_name')"
-          if [ -z "${TAG:-}" ] || [ "$TAG" = "null" ]; then
-            echo "Failed to get tag_name from latest release"
-            exit 1
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-          echo "Latest TAG=$TAG"
+          [ -n "$TAG" ] && [ "$TAG" != "null" ]
 
           URL_AMD64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
           URL_ARM64="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("linux_arm64\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
 
-          if [ -z "${URL_AMD64:-}" ] || [ "$URL_AMD64" = "null" ]; then
-            echo "Cannot find linux_amd64.tar.gz in latest release assets"
-            exit 1
-          fi
-          if [ -z "${URL_ARM64:-}" ] || [ "$URL_ARM64" = "null" ]; then
-            echo "Cannot find linux_arm64.tar.gz in latest release assets"
-            exit 1
-          fi
+          [ -n "$URL_AMD64" ] && [ "$URL_AMD64" != "null" ]
+          [ -n "$URL_ARM64" ] && [ "$URL_ARM64" != "null" ]
 
-          # 对应 tag 的源码包（用于拿 config.example.yaml）
           SRC_URL="https://github.com/router-for-me/CLIProxyAPI/archive/refs/tags/${TAG}.tar.gz"
-          echo "SRC_URL=$SRC_URL" >> "$GITHUB_ENV"
 
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url_amd64=$URL_AMD64" >> "$GITHUB_OUTPUT"
+          echo "url_arm64=$URL_ARM64" >> "$GITHUB_OUTPUT"
+          echo "src_url=$SRC_URL" >> "$GITHUB_OUTPUT"
+
+          echo "Latest TAG=$TAG"
           echo "AMD64 asset: $URL_AMD64"
           echo "ARM64 asset: $URL_ARM64"
           echo "Source tarball: $SRC_URL"
@@ -59,24 +52,27 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Skip if this release tag already exists in GHCR
+        id: skip
         run: |
-          set -e
+          set -euo pipefail
+          TAG="${{ steps.rel.outputs.tag }}"
           IMAGE="ghcr.io/${OWNER_LC}/cpa:${TAG}"
           echo "Checking: $IMAGE"
+
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Already built for ${TAG}, skip."
-            echo "SKIP=true" >> "$GITHUB_ENV"
           else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "Not built for ${TAG}, will build."
-            echo "SKIP=false" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Docker Buildx
-        if: env.SKIP != 'true'
+        if: steps.skip.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Dockerfile (Debian + bash, rename to CPA, include config.example.yaml)
-        if: env.SKIP != 'true'
+      - name: Generate Dockerfile (Debian + bash, rename CPA, include config)
+        if: steps.skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
           mkdir -p ctx
@@ -109,7 +105,6 @@ jobs:
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
               \
-              # 找可执行文件并安装为 /CPA/CPA
               bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n 1)"; \
               if [[ -z "$bin" ]]; then \
                 echo "CLIProxyAPI* not found, fallback to any executable file"; \
@@ -120,11 +115,10 @@ jobs:
               cp "$bin" /CPA/CPA; \
               chmod +x /CPA/CPA; \
               \
-              # 下载同 tag 的源码包，只提取 config.example.yaml
               echo "Downloading source tarball: $SRC_URL"; \
               curl -fsSL "$SRC_URL" -o /tmp/src/src.tar.gz; \
               tar -xzf /tmp/src/src.tar.gz -C /tmp/src; \
-              cfg="$(find /tmp/src -maxdepth 4 -type f -name 'config.example.yaml' | head -n 1)"; \
+              cfg="$(find /tmp/src -maxdepth 6 -type f -name 'config.example.yaml' | head -n 1)"; \
               [[ -n "$cfg" ]] || (echo "config.example.yaml not found in source tarball" && exit 1); \
               cp "$cfg" /CPA/config.example.yaml; \
               \
@@ -139,16 +133,20 @@ jobs:
           EOF
 
       - name: Build & push multi-arch (tag + latest)
-        if: env.SKIP != 'true'
+        if: steps.skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
+          TAG="${{ steps.rel.outputs.tag }}"
+          URL_AMD64="${{ steps.rel.outputs.url_amd64 }}"
+          URL_ARM64="${{ steps.rel.outputs.url_arm64 }}"
+          SRC_URL="${{ steps.rel.outputs.src_url }}"
           IMAGE="ghcr.io/${OWNER_LC}/cpa"
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            --build-arg URL_AMD64="${URL_AMD64}" \
-            --build-arg URL_ARM64="${URL_ARM64}" \
-            --build-arg SRC_URL="${SRC_URL}" \
+            --build-arg URL_AMD64="$URL_AMD64" \
+            --build-arg URL_ARM64="$URL_ARM64" \
+            --build-arg SRC_URL="$SRC_URL" \
             -t "${IMAGE}:${TAG}" \
             -t "${IMAGE}:latest" \
             --push \
