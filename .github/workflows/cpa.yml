@@ -1,4 +1,5 @@
 name: CPA
+
 on:
   schedule:
     - cron: "10 23 * * *"
@@ -32,17 +33,11 @@ jobs:
           [ -n "$URL_AMD64" ] && [ "$URL_AMD64" != "null" ]
           [ -n "$URL_ARM64" ] && [ "$URL_ARM64" != "null" ]
 
-          SRC_URL="https://github.com/router-for-me/CLIProxyAPI/archive/refs/tags/${TAG}.tar.gz"
-
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "url_amd64=$URL_AMD64" >> "$GITHUB_OUTPUT"
           echo "url_arm64=$URL_ARM64" >> "$GITHUB_OUTPUT"
-          echo "src_url=$SRC_URL" >> "$GITHUB_OUTPUT"
 
           echo "Latest TAG=$TAG"
-          echo "AMD64 asset: $URL_AMD64"
-          echo "ARM64 asset: $URL_ARM64"
-          echo "Source tarball: $SRC_URL"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -51,30 +46,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Skip if this release tag already exists in GHCR
+      - name: Skip if this release tag already exists
         id: skip
         run: |
           set -euo pipefail
           TAG="${{ steps.rel.outputs.tag }}"
           IMAGE="ghcr.io/${OWNER_LC}/cpa:${TAG}"
-          echo "Checking: $IMAGE"
 
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Already built for ${TAG}, skip."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "Not built for ${TAG}, will build."
           fi
 
       - name: Set up Docker Buildx
         if: steps.skip.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Dockerfile (Debian + bash, rename CPA, include config)
+      - name: Generate Dockerfile
         if: steps.skip.outputs.skip != 'true'
         run: |
-          set -euo pipefail
           mkdir -p ctx
 
           cat > ctx/Dockerfile <<'EOF'
@@ -82,7 +73,6 @@ jobs:
 
           ARG URL_AMD64
           ARG URL_ARM64
-          ARG SRC_URL
           ARG TARGETARCH
 
           RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -95,35 +85,26 @@ jobs:
           RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
           RUN set -euxo pipefail; \
-              mkdir -p /tmp/app /tmp/src /CPA; \
+              mkdir -p /tmp/app /CPA; \
               case "$TARGETARCH" in \
                 amd64) url="$URL_AMD64" ;; \
                 arm64) url="$URL_ARM64" ;; \
                 *) echo "Unsupported TARGETARCH=$TARGETARCH" && exit 1 ;; \
               esac; \
-              echo "Downloading binary for $TARGETARCH: $url"; \
               curl -fsSL "$url" -o /tmp/app/app.tar.gz; \
               tar -xzf /tmp/app/app.tar.gz -C /tmp/app; \
               \
-              bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 \( -name 'CLIProxyAPI' -o -name 'CLIProxyAPI*' \) | head -n 1)"; \
-              if [[ -z "$bin" ]]; then \
-                echo "CLIProxyAPI* not found, fallback to any executable file"; \
-                bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 | head -n 1)"; \
-              fi; \
-              [[ -n "$bin" ]] || (echo "Executable binary not found in release tarball" && exit 1); \
-              echo "Using binary: $bin"; \
+              bin="$(find /tmp/app -maxdepth 5 -type f -perm -111 | head -n 1)"; \
+              [[ -n "$bin" ]]; \
               cp "$bin" /CPA/CPA; \
               chmod +x /CPA/CPA; \
               \
-              echo "Downloading source tarball: $SRC_URL"; \
-              curl -fsSL "$SRC_URL" -o /tmp/src/src.tar.gz; \
-              tar -xzf /tmp/src/src.tar.gz -C /tmp/src; \
-              cfg="$(find /tmp/src -maxdepth 6 -type f -name 'config.example.yaml' | head -n 1)"; \
-              [[ -n "$cfg" ]] || (echo "config.example.yaml not found in source tarball" && exit 1); \
-              cp "$cfg" /CPA/config.example.yaml; \
+              # 下载你指定的 config.example.yaml
+              curl -fsSL "https://raw.githubusercontent.com/Misaka009982/Zeabur/refs/heads/main/config/config.example.yaml" \
+                -o /CPA/config.example.yaml; \
               \
               chown -R 1000:1000 /CPA; \
-              rm -rf /tmp/app /tmp/src
+              rm -rf /tmp/app
 
           WORKDIR /CPA
           EXPOSE 8317
@@ -132,21 +113,18 @@ jobs:
           CMD ["./CPA"]
           EOF
 
-      - name: Build & push multi-arch (tag + latest)
+      - name: Build & push multi-arch
         if: steps.skip.outputs.skip != 'true'
         run: |
-          set -euo pipefail
           TAG="${{ steps.rel.outputs.tag }}"
           URL_AMD64="${{ steps.rel.outputs.url_amd64 }}"
           URL_ARM64="${{ steps.rel.outputs.url_arm64 }}"
-          SRC_URL="${{ steps.rel.outputs.src_url }}"
           IMAGE="ghcr.io/${OWNER_LC}/cpa"
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --build-arg URL_AMD64="$URL_AMD64" \
             --build-arg URL_ARM64="$URL_ARM64" \
-            --build-arg SRC_URL="$SRC_URL" \
             -t "${IMAGE}:${TAG}" \
             -t "${IMAGE}:latest" \
             --push \
